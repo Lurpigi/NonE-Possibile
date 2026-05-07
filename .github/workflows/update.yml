@@ -1,0 +1,80 @@
+name: Update subtitles & rebuild site
+
+on:
+  schedule:
+    # Ogni notte a mezzanotte (UTC)
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+    # Permette di avviare manualmente dalla UI di GitHub
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # necessario per la push finale
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # serve la history completa per la push
+
+      # ── 2. Setup Python ──────────────────────────────────────────────────
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # ── 3. Installa yt-dlp e ffmpeg ──────────────────────────────────────
+      - name: Install yt-dlp
+        run: |
+          sudo apt-get install -y ffmpeg
+          curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
+               -o /usr/local/bin/yt-dlp
+          chmod a+rx /usr/local/bin/yt-dlp
+          yt-dlp --version
+
+      # ── 4. Scarica nuovi VTT + analizza ──────────────────────────────────
+      # I file .vtt vengono salvati in output/subtitles/ ma NON committati
+      # (sono troppo grandi e inutili per il repo).
+      # Il JSON cumulativo e analyzed_videos.json SONO committati e vengono
+      # usati come stato persistente tra una run e l'altra.
+      - name: Run subtitle searcher
+        env:
+          CHANNEL_URL:   "https://www.youtube.com/@SabakuNoStreamer"
+          SEARCH_PHRASE: "non è possibile"
+          LANG_CODE:     "it"
+          OUTPUT_DIR:    "${{ github.workspace }}/output"
+        run: |
+          mkdir -p output/subtitles
+          python search_subtitles.py
+
+      # ── 5. Copia il JSON aggiornato in docs/ per GitHub Pages ────────────
+      - name: Copy JSON to docs/
+        run: |
+          cp output/results_cumulative.json docs/results.json
+
+      # ── 6. Rebuild del sito statico (già presente in docs/) ───────────────
+      # Il sito legge docs/results.json a runtime, quindi non serve rebuild:
+      # la copia del JSON al passo precedente è sufficiente.
+
+      # ── 7. Commit & push se ci sono cambiamenti ───────────────────────────
+      - name: Commit and push if changed
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add \
+            output/results_cumulative.json \
+            output/analyzed_videos.json \
+            docs/results.json
+
+          # Committa solo se c'è qualcosa di nuovo
+          if git diff --cached --quiet; then
+            echo "Nessun nuovo video trovato — niente da committare."
+          else
+            TIMESTAMP=$(date -u "+%Y-%m-%d %H:%M UTC")
+            git commit -m "chore: aggiorna risultati [$TIMESTAMP]"
+            git push
+          fi

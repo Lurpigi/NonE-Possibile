@@ -1,0 +1,11 @@
+# Sottotitoli grezzi: grandi e inutili nel repo
+output/subtitles/
+output/_batch.txt
+
+# File temporanei
+*.pyc
+__pycache__/
+.DS_Store
+
+# Il CSV è ridondante (il JSON basta)
+output/results_cumulative.csv
