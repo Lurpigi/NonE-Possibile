@@ -214,11 +214,14 @@ def download_subtitles():
     subprocess.run([
         "yt-dlp",
         "--batch-file", str(batch),
-        "--skip-download",
-        "--write-auto-sub",
+        "--skip-download",          # non scaricare il video
+        "--write-auto-sub",         # sottotitoli auto-generati
         "--sub-lang", LANG,
         "--sub-format", "vtt",
-        "--convert-subs", "vtt",
+        # NON usiamo --convert-subs: richiederebbe un formato video disponibile
+        # e causa "Requested format is not available" su alcuni video.
+        # non verificare i formati video (non servono)
+        "--no-check-formats",
         "--output", str(SUBS_DIR / "%(title)s [%(id)s].%(ext)s"),
         "--ignore-errors",
         "--sleep-interval", "1",
