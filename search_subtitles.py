@@ -16,15 +16,14 @@ import argparse
 from pathlib import Path
 
 # ── Configurazione ───────────────────────────────────────────────────────────
-CHANNEL_URL = os.getenv(
-    "CHANNEL_URL",   "https://www.youtube.com/@SabakuNoStreamer")
+CHANNEL_URL   = os.getenv("CHANNEL_URL",   "https://www.youtube.com/@SabakuNoStreamer")
 SEARCH_PHRASE = os.getenv("SEARCH_PHRASE", "non è possibile")
-OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", "/output"))
-SUBS_DIR = OUTPUT_DIR / "subtitles"
-LANG = os.getenv("LANG_CODE", "it")
+OUTPUT_DIR    = Path(os.getenv("OUTPUT_DIR", "/output"))
+SUBS_DIR      = OUTPUT_DIR / "subtitles"
+LANG          = os.getenv("LANG_CODE", "it")
 CUMULATIVE_JSON = OUTPUT_DIR / "results_cumulative.json"
 # Cookies: path a un file cookies.txt Netscape (opzionale, serve per GitHub Actions)
-COOKIES_FILE = os.getenv("YT_COOKIES_FILE", "")
+COOKIES_FILE    = os.getenv("YT_COOKIES_FILE", "")
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -42,7 +41,7 @@ def vtt_time_to_seconds(time_str: str) -> float:
 
 def seconds_to_hhmmss(seconds: float) -> str:
     t = int(seconds)
-    return f"{t//3600:02d}:{(t % 3600)//60:02d}:{t % 60:02d}"
+    return f"{t//3600:02d}:{(t%3600)//60:02d}:{t%60:02d}"
 
 
 # ── Parsing VTT con deduplicazione rolling-window ────────────────────────────
@@ -77,8 +76,7 @@ def parse_vtt_to_sentences(vtt_path: Path) -> list:
     )
 
     raw_cues = [
-        {"start": vtt_time_to_seconds(
-            m.group(1)), "text": clean_vtt_text(m.group(2))}
+        {"start": vtt_time_to_seconds(m.group(1)), "text": clean_vtt_text(m.group(2))}
         for m in cue_re.finditer(raw)
     ]
 
@@ -91,12 +89,12 @@ def parse_vtt_to_sentences(vtt_path: Path) -> list:
         nonlocal buf_words, buf_start
         if buf_words:
             sentences.append({"start": buf_start, "end": end,
-                              "text": " ".join(buf_words)})
+                               "text": " ".join(buf_words)})
         buf_words = []
         buf_start = None
 
     for cue in raw_cues:
-        text = cue["text"]
+        text  = cue["text"]
         start = cue["start"]
 
         # ── Cue vuoto: reset esplicito ────────────────────────────────────
@@ -170,8 +168,7 @@ def cookies_args() -> list:
             print(f"[INFO] Uso cookies: {COOKIES_FILE} ({size} bytes)")
             return ["--cookies", COOKIES_FILE]
         else:
-            print(
-                f"[WARN] File cookies troppo piccolo ({size} bytes) — ignorato.")
+            print(f"[WARN] File cookies troppo piccolo ({size} bytes) — ignorato.")
     return []
 
 
@@ -181,6 +178,7 @@ def get_channel_ids() -> list:
     print("[yt-dlp] Recupero lista video dal canale...")
     r = subprocess.run(
         ["yt-dlp", "--flat-playlist", "--print", "id", "--ignore-errors",
+         "--extractor-args", "youtube:player_client=web",
          *cookies_args(), CHANNEL_URL],
         capture_output=True, text=True,
     )
@@ -206,13 +204,11 @@ def download_subtitles(analyzed_ids: set):
     already |= on_disk
 
     if analyzed_ids:
-        print(
-            f"[SKIP] {len(analyzed_ids)} video già in analyzed_videos.json → non riscaricati.")
+        print(f"[SKIP] {len(analyzed_ids)} video già in analyzed_videos.json → non riscaricati.")
     if on_disk - analyzed_ids:
-        print(
-            f"[SKIP] {len(on_disk - analyzed_ids)} VTT aggiuntivi su disco → non riscaricati.")
+        print(f"[SKIP] {len(on_disk - analyzed_ids)} VTT aggiuntivi su disco → non riscaricati.")
 
-    all_ids = get_channel_ids()
+    all_ids     = get_channel_ids()
     to_download = [v for v in all_ids if v not in already]
     print(f"[INFO] Nuovi video da scaricare: {len(to_download)}\n")
 
@@ -233,10 +229,10 @@ def download_subtitles(analyzed_ids: set):
         "--write-auto-sub",         # sottotitoli auto-generati
         "--sub-lang", LANG,
         "--sub-format", "vtt",
-        # NON usiamo --convert-subs: richiederebbe un formato video disponibile
-        # e causa "Requested format is not available" su alcuni video.
-        # non verificare i formati video (non servono)
-        "--no-check-formats",
+        "--no-check-formats",       # non verificare i formati video (non servono)
+        # Forza il client web: usa i cookie forniti invece dei player API
+        # alternativi (android vr, ios, ecc.) che li ignorano e vengono bloccati
+        "--extractor-args", "youtube:player_client=web",
         "--output", str(SUBS_DIR / "%(title)s [%(id)s].%(ext)s"),
         "--ignore-errors",
         "--sleep-interval", "1",
@@ -254,12 +250,10 @@ def process_subtitles(phrase: str, already_done_ids: set) -> list:
     Restituisce i nuovi risultati trovati.
     """
     vtt_files = sorted(SUBS_DIR.glob(f"*.{LANG}.vtt"))
-    new_files = [p for p in vtt_files if id_and_title(
-        p)[0] not in already_done_ids]
+    new_files = [p for p in vtt_files if id_and_title(p)[0] not in already_done_ids]
     skip_count = len(vtt_files) - len(new_files)
 
-    print(
-        f"\n[INFO] VTT totali: {len(vtt_files)} | già analizzati: {skip_count} | nuovi: {len(new_files)}")
+    print(f"\n[INFO] VTT totali: {len(vtt_files)} | già analizzati: {skip_count} | nuovi: {len(new_files)}")
 
     results = []
     for vtt_path in new_files:
@@ -267,19 +261,19 @@ def process_subtitles(phrase: str, already_done_ids: set) -> list:
         url = f"https://www.youtube.com/watch?v={vid_id}"
 
         sentences = parse_vtt_to_sentences(vtt_path)
-        hits = search_phrase(sentences, phrase)
+        hits      = search_phrase(sentences, phrase)
 
         if hits:
             print(f"  ✓ [{title}] — {len(hits)} occorrenza/e")
             for h in hits:
                 results.append({
-                    "video_id": vid_id,
-                    "title": title,
-                    "url": url,
-                    "timestamp": seconds_to_hhmmss(h["start"]),
-                    "start_sec": round(h["start"], 2),
+                    "video_id"  : vid_id,
+                    "title"     : title,
+                    "url"       : url,
+                    "timestamp" : seconds_to_hhmmss(h["start"]),
+                    "start_sec" : round(h["start"], 2),
                     "direct_url": f"{url}&t={int(h['start'])}s",
-                    "text": h["text"],
+                    "text"      : h["text"],
                 })
         else:
             print(f"  · [{title}] — nessuna occorrenza")
@@ -322,11 +316,9 @@ def save_cumulative(all_results: list, analyzed_ids: set, meta_path: Path):
     # CSV di comodo
     csv_path = OUTPUT_DIR / "results_cumulative.csv"
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(
-            f, fieldnames=["video_id", "title", "timestamp", "direct_url", "text"])
+        w = csv.DictWriter(f, fieldnames=["video_id","title","timestamp","direct_url","text"])
         w.writeheader()
-        w.writerows({k: r[k] for k in ["video_id", "title",
-                    "timestamp", "direct_url", "text"]} for r in all_results)
+        w.writerows({k: r[k] for k in ["video_id","title","timestamp","direct_url","text"]} for r in all_results)
 
     print(f"\n[JSON] → {CUMULATIVE_JSON}")
     print(f"[CSV]  → {csv_path}")
@@ -340,7 +332,7 @@ def main():
     parser.add_argument("--skip-download", action="store_true",
                         help="Non scarica nuovi VTT, usa solo quelli presenti")
     parser.add_argument("--phrase", default=SEARCH_PHRASE)
-    args = parser.parse_args()
+    args   = parser.parse_args()
     phrase = args.phrase
 
     print("=" * 50)
@@ -352,8 +344,7 @@ def main():
 
     # Carica PRIMA i dati cumulativi, così download_subtitles sa cosa saltare
     existing_results, analyzed_ids, meta_path = load_cumulative()
-    print(
-        f"[INFO] Risultati già nel JSON: {len(existing_results)} | Video già analizzati: {len(analyzed_ids)}")
+    print(f"[INFO] Risultati già nel JSON: {len(existing_results)} | Video già analizzati: {len(analyzed_ids)}")
 
     if not args.skip_download:
         download_subtitles(analyzed_ids)
