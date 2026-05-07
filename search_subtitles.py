@@ -189,13 +189,28 @@ def get_channel_ids() -> list:
     return ids
 
 
-def download_subtitles():
+def download_subtitles(analyzed_ids: set):
+    """
+    Scarica i VTT dei video non ancora analizzati.
+    Usa analyzed_ids (caricato dal JSON committato) come fonte primaria
+    per lo skip — i file .vtt su disco sono transitori e non committati.
+    Salta anche i VTT già presenti su disco (run locali con volume montato).
+    """
     SUBS_DIR.mkdir(parents=True, exist_ok=True)
 
-    already = {id_and_title(p)[0] for p in SUBS_DIR.glob(f"*.{LANG}.vtt")}
-    if already:
+    # Skip primario: video già nel JSON cumulativo (persistente tra run)
+    already = set(analyzed_ids)
+
+    # Skip secondario: VTT già su disco (utile in locale con volume)
+    on_disk = {id_and_title(p)[0] for p in SUBS_DIR.glob(f"*.{LANG}.vtt")}
+    already |= on_disk
+
+    if analyzed_ids:
         print(
-            f"[SKIP] {len(already)} VTT già presenti su disco → non riscaricati.")
+            f"[SKIP] {len(analyzed_ids)} video già in analyzed_videos.json → non riscaricati.")
+    if on_disk - analyzed_ids:
+        print(
+            f"[SKIP] {len(on_disk - analyzed_ids)} VTT aggiuntivi su disco → non riscaricati.")
 
     all_ids = get_channel_ids()
     to_download = [v for v in all_ids if v not in already]
@@ -335,15 +350,15 @@ def main():
     print(f"Frase  : \"{phrase}\"")
     print(f"Output : {OUTPUT_DIR}\n")
 
-    if not args.skip_download:
-        download_subtitles()
-    else:
-        print("[INFO] Download saltato.")
-
-    # Carica risultati e lista video già analizzati
+    # Carica PRIMA i dati cumulativi, così download_subtitles sa cosa saltare
     existing_results, analyzed_ids, meta_path = load_cumulative()
     print(
         f"[INFO] Risultati già nel JSON: {len(existing_results)} | Video già analizzati: {len(analyzed_ids)}")
+
+    if not args.skip_download:
+        download_subtitles(analyzed_ids)
+    else:
+        print("[INFO] Download saltato.")
 
     # Analizza solo i nuovi VTT
     new_results = process_subtitles(phrase, analyzed_ids)
