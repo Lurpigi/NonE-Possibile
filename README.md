@@ -1,4 +1,4 @@
-# Non È Possibile — Archivio SabakuNoMono
+# Non È Possibile - SabakuNoSutoriimaa
 
 Archivio automatico di ogni volta che Sabaku ha detto _«non è possibile»_ nei suoi video YouTube.
 Il sito si aggiorna ogni notte tramite GitHub Actions.
