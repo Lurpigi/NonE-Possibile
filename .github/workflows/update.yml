@@ -1,24 +1,27 @@
 name: Update subtitles & rebuild site
 
 on:
-    schedule:
-        # Ogni notte a mezzanotte (UTC)
-        - cron: "0 0 * * *"
+    # schedule:
+    #   - cron: "0 0 * * *"   # ogni notte a mezzanotte UTC
     workflow_dispatch:
-        # Permette di avviare manualmente dalla UI di GitHub
+        inputs:
+            retry_failed:
+                description: "Riprova video falliti in precedenza (rimuove skip su errori bot)"
+                type: boolean
+                default: false
 
 jobs:
     update:
         runs-on: ubuntu-latest
         permissions:
-            contents: write # necessario per la push finale
+            contents: write
 
         steps:
             # ── 1. Checkout ──────────────────────────────────────────────────────
             - name: Checkout repository
               uses: actions/checkout@v4
               with:
-                  fetch-depth: 0 # serve la history completa per la push
+                  fetch-depth: 0
 
             # ── 2. Setup Python ──────────────────────────────────────────────────
             - name: Set up Python
@@ -27,32 +30,46 @@ jobs:
                   python-version: "3.12"
 
             # ── 3. Installa dipendenze ───────────────────────────────────────────
-            # Node.js è richiesto da yt-dlp per risolvere il "n challenge" di YouTube.
-            # Senza di esso yt-dlp degrada al player API limitato che non espone i
-            # sottotitoli, causando "Requested format is not available".
+            # Node.js serve a yt-dlp per risolvere l'"n challenge" di YouTube.
+            # Senza degrada al player API limitato → "Requested format not available".
             - name: Install dependencies
               run: |
-                  sudo apt-get install -y ffmpeg nodejs
-                  node --version
-                  curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
-                       -o /usr/local/bin/yt-dlp
-                  chmod a+rx /usr/local/bin/yt-dlp
-                  yt-dlp --version
+                  sudo apt-get install -y ffmpeg curl unzip ca-certificates
 
-            # ── 4. Scrivi il file cookies ─────────────────────────────────────────
-            # Il secret YT_COOKIES contiene il contenuto di un cookies.txt Netscape
-            # esportato dal browser mentre si è loggati su youtube.com.
-            # Serve per aggirare il blocco "Sign in to confirm you're not a bot"
-            # che YouTube applica agli IP dei datacenter (come quelli di GitHub).
+                  # Deno: runtime raccomandato per il nuovo EJS n-challenge solver di yt-dlp
+                  # (dal 2025-11 il binario standalone non include gli EJS scripts)
+                  curl -fsSL https://deno.land/install.sh | sudo DENO_INSTALL=/usr/local sh
+                  deno --version
+
+                  # yt-dlp via pip[default] include automaticamente yt-dlp-ejs
+                  pip install "yt-dlp[default]" --no-cache-dir
+                  yt-dlp --version
             - name: Write YouTube cookies
               run: |
-                  echo "${{ secrets.YT_COOKIES }}" > /tmp/yt_cookies.txt
+                  printf '%s' "${{ secrets.YT_COOKIES }}" > /tmp/yt_cookies.txt
+                  # Controlla che il file non sia vuoto (secret non configurato)
+                  LINES=$(wc -l < /tmp/yt_cookies.txt)
+                  echo "[INFO] Cookie file: ${LINES} righe"
+                  if [ "$LINES" -lt 3 ]; then
+                    echo "::warning::Il secret YT_COOKIES sembra vuoto o troppo corto. I download potrebbero fallire."
+                  fi
 
-            # ── 5. Scarica nuovi VTT + analizza ──────────────────────────────────
-            # I file .vtt vengono salvati in output/subtitles/ ma NON committati
-            # (sono troppo grandi e inutili per il repo).
-            # Il JSON cumulativo e analyzed_videos.json SONO committati e vengono
-            # usati come stato persistente tra una run e l'altra.
+            # ── 5. Rimuovi video falliti dall'elenco "analizzati" (opzionale) ────
+            # Attivabile manualmente con retry_failed=true.
+            # Rimuove da analyzed_videos.json i video che non hanno un VTT su disco
+            # (ovvero quelli che in passato hanno fallito) così vengono ritentati.
+            - name: Clear failed videos from analyzed list
+              if: ${{ github.event.inputs.retry_failed == 'true' }}
+              run: |
+                  python - << 'EOF'
+                  import json
+                  from pathlib import Path
+                  # Nessun VTT su disco in Actions → questo step è solo un marker
+                  # per segnalare che si vuole un retry; lo script lo gestisce via env
+                  print("[INFO] retry_failed attivato: i video senza VTT verranno ritentati.")
+                  EOF
+
+            # ── 6. Scarica nuovi VTT + analizza ─────────────────────────────────
             - name: Run subtitle searcher
               env:
                   CHANNEL_URL: "https://www.youtube.com/@SabakuNoStreamer"
@@ -60,16 +77,18 @@ jobs:
                   LANG_CODE: "it"
                   OUTPUT_DIR: "${{ github.workspace }}/output"
                   YT_COOKIES_FILE: "/tmp/yt_cookies.txt"
+                  # Passa "1" per ritentare i video precedentemente falliti
+                  RETRY_FAILED: "${{ github.event.inputs.retry_failed || 'false' }}"
               run: |
                   mkdir -p output/subtitles
                   python search_subtitles.py
 
-            # ── 6. Copia il JSON aggiornato in docs/ per GitHub Pages ────────────
+            # ── 7. Copia il JSON aggiornato in docs/ per GitHub Pages ────────────
             - name: Copy JSON to docs/
               run: |
                   cp output/results_cumulative.json docs/results.json
 
-            # ── 7. Commit & push se ci sono cambiamenti ───────────────────────────
+            # ── 8. Commit & push se ci sono cambiamenti ──────────────────────────
             - name: Commit and push if changed
               run: |
                   git config user.name  "github-actions[bot]"
@@ -78,11 +97,11 @@ jobs:
                   git add \
                     output/results_cumulative.json \
                     output/analyzed_videos.json \
+                    output/failed_videos.json \
                     docs/results.json
 
-                  # Committa solo se c'è qualcosa di nuovo
                   if git diff --cached --quiet; then
-                    echo "Nessun nuovo video trovato — niente da committare."
+                    echo "Nessun cambiamento — niente da committare."
                   else
                     TIMESTAMP=$(date -u "+%Y-%m-%d %H:%M UTC")
                     git commit -m "chore: aggiorna risultati [$TIMESTAMP]"

@@ -1,16 +1,18 @@
 services:
-  yt-search:
-    build: .
-    image: sabaku-subtitle-searcher:latest
-    container_name: sabaku_searcher
-    environment:
-      CHANNEL_URL:   "https://www.youtube.com/@SabakuNoStreamer"
-      SEARCH_PHRASE: "non è possibile"
-      LANG_CODE:     "it"
-      OUTPUT_DIR:    "/output"
-    volumes:
-      - ./output:/output
-    restart: "no"
+    yt-search:
+        build: .
+        image: sabaku-subtitle-searcher:latest
+        container_name: sabaku_searcher
+        environment:
+            CHANNEL_URL: "https://www.youtube.com/@SabakuNoStreamer"
+            SEARCH_PHRASE: "non è possibile"
+            LANG_CODE: "it"
+            OUTPUT_DIR: "/output"
+            YT_COOKIES_FILE: "/yt_cookies.txt"
+        volumes:
+            - ./output:/output
+            - ./yt_cookies.txt:/yt_cookies.txt
+        restart: "no"
 
 # ── USO ──────────────────────────────────────────────────────────────────────
 # Prima run (scarica tutto + analizza):

@@ -1,6 +1,7 @@
 # Sottotitoli grezzi: grandi e inutili nel repo
 output/subtitles/
-output/_batch.txt
+#output/_batch.txt
+*.txt
 
 # File temporanei
 *.pyc
@@ -9,3 +10,5 @@ __pycache__/
 
 # Il CSV è ridondante (il JSON basta)
 output/results_cumulative.csv
+
+.env
