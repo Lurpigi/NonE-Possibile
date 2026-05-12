@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
-YouTube Subtitle Searcher v3
-- Scarica i sottotitoli automatici IT di tutti i video di un canale
-- Salta i VTT già presenti su disco
-- Gestisce correttamente la struttura "rolling window con overlap" di YT
-- Aggiorna un JSON cumulativo (append-only sui nuovi video)
+YouTube Subtitle Searcher v5
+- Scarica i sottotitoli automatici IT
+- Deduplica le frasi (rolling window)
+- Recupera in modo robusto le date di pubblicazione reali
 """
 
 import os
@@ -17,21 +16,18 @@ from pathlib import Path
 
 # ── Configurazione ───────────────────────────────────────────────────────────
 CHANNEL_URL = os.getenv(
-    "CHANNEL_URL",   "https://www.youtube.com/@SabakuNoStreamer")
+    "CHANNEL_URL", "https://www.youtube.com/@SabakuNoStreamer")
 SEARCH_PHRASE = os.getenv("SEARCH_PHRASE", "non è possibile")
 OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", "/output"))
 SUBS_DIR = OUTPUT_DIR / "subtitles"
 LANG = os.getenv("LANG_CODE", "it")
 CUMULATIVE_JSON = OUTPUT_DIR / "results_cumulative.json"
 FAILED_JSON = OUTPUT_DIR / "failed_videos.json"
-# Cookies: path a un file cookies.txt Netscape (opzionale, serve per GitHub Actions)
 COOKIES_FILE = os.getenv("YT_COOKIES_FILE", "")
-# Se "true", i video in failed_videos.json vengono ritentati (rimossi dallo skip)
 RETRY_FAILED = os.getenv("RETRY_FAILED", "false").lower() == "true"
-# ─────────────────────────────────────────────────────────────────────────────
-
 
 # ── Utilità tempo ─────────────────────────────────────────────────────────────
+
 
 def vtt_time_to_seconds(time_str: str) -> float:
     time_str = time_str.strip().replace(",", ".")
@@ -47,32 +43,17 @@ def seconds_to_hhmmss(seconds: float) -> str:
     t = int(seconds)
     return f"{t//3600:02d}:{(t % 3600)//60:02d}:{t % 60:02d}"
 
+# ── Parsing VTT ──────────────────────────────────────────────────────────────
 
-# ── Parsing VTT con deduplicazione rolling-window ────────────────────────────
 
 def clean_vtt_text(raw: str) -> str:
-    """Rimuove tag HTML/timing e normalizza spazi."""
     text = re.sub(r"<[^>]+>", "", raw)
     return re.sub(r"\s+", " ", text).strip()
 
 
 def parse_vtt_to_sentences(vtt_path: Path) -> list:
-    """
-    Ricostruisce frasi dal VTT auto-generato di YouTube.
-
-    YT usa finestre scorrevoli con overlap:
-      Finestra N:   "ABC DEF GHI"          (contiene nuove parole)
-      Cue reset:    "GHI"                  (coda di N, ripetuta come inizio di N+1)
-      Finestra N+1: "GHI JKL MNO"         (estende da GHI)
-
-    Il cue di reset ("GHI") è già nel buffer → va riconosciuto e saltato
-    senza emettere le sue parole una seconda volta.
-
-    Risultato: ogni parola viene emessa UNA SOLA VOLTA, con il timestamp
-    del momento in cui appare per la prima volta.
-    """
     raw = vtt_path.read_text(encoding="utf-8", errors="replace")
-    raw = re.sub(r"\AWEBVTT[^\n]*\n(.*?\n)?\n", "", raw)  # strip header
+    raw = re.sub(r"\AWEBVTT[^\n]*\n(.*?\n)?\n", "", raw)
 
     cue_re = re.compile(
         r"(\d{2}:\d{2}:\d{2}[\.,]\d{3})\s*-->\s*\S+[^\n]*\n(.*?)(?=\n\n|\Z)",
@@ -94,7 +75,7 @@ def parse_vtt_to_sentences(vtt_path: Path) -> list:
         nonlocal buf_words, buf_start
         if buf_words:
             sentences.append({"start": buf_start, "end": end,
-                              "text": " ".join(buf_words)})
+                             "text": " ".join(buf_words)})
         buf_words = []
         buf_start = None
 
@@ -102,13 +83,11 @@ def parse_vtt_to_sentences(vtt_path: Path) -> list:
         text = cue["text"]
         start = cue["start"]
 
-        # ── Cue vuoto: reset esplicito ────────────────────────────────────
         if not text:
             flush(start)
             prev_text = ""
             continue
 
-        # ── Estensione normale: testo corrente inizia con il precedente ───
         if prev_text and text.startswith(prev_text):
             new_part = text[len(prev_text):].strip()
             if new_part:
@@ -118,24 +97,16 @@ def parse_vtt_to_sentences(vtt_path: Path) -> list:
             prev_text = text
             continue
 
-        # ── Cue di transizione (overlap): il testo è la CODA del precedente
-        # Esempi:
-        #   prev = "ABC DEF GHI JKL"  →  cue = "GHI JKL"  (endswith)
-        #   prev = "ABC DEF GHI JKL"  →  cue = "JKL"       (endswith)
         if prev_text and prev_text.endswith(text):
-            # Già nel buffer: chiudi la frase corrente e usa questo testo
-            # come nuovo "prev" per il prossimo extend
             flush(start)
             prev_text = text
             continue
 
-        # Caso più generale: il testo di transizione è contenuto nel precedente
         if prev_text and text in prev_text:
             flush(start)
             prev_text = text
             continue
 
-        # ── Reset vero: nuovo contenuto non correlato ─────────────────────
         flush(start)
         if text:
             buf_start = start
@@ -145,15 +116,13 @@ def parse_vtt_to_sentences(vtt_path: Path) -> list:
     flush(float("inf"))
     return sentences
 
+# ── Helpers ──────────────────────────────────────────────────────────────────
 
-# ── Ricerca ───────────────────────────────────────────────────────────────────
 
 def search_phrase(sentences: list, phrase: str) -> list:
     pl = phrase.lower()
     return [s for s in sentences if pl in s["text"].lower()]
 
-
-# ── ID/titolo da path VTT ─────────────────────────────────────────────────────
 
 def id_and_title(vtt_path: Path) -> tuple:
     stem = vtt_path.stem.removesuffix(f".{LANG}")
@@ -163,22 +132,15 @@ def id_and_title(vtt_path: Path) -> tuple:
     return "unknown", stem
 
 
-# ── Cookie helper ────────────────────────────────────────────────────────────
-
 def cookies_args() -> list:
-    """Restituisce i flag --cookies se il file è configurato e valido."""
     if COOKIES_FILE and Path(COOKIES_FILE).exists():
         size = Path(COOKIES_FILE).stat().st_size
-        if size > 50:  # file non vuoto/placeholder
-            print(f"[INFO] Uso cookies: {COOKIES_FILE} ({size} bytes)")
+        if size > 50:
             return ["--cookies", COOKIES_FILE]
-        else:
-            print(
-                f"[WARN] File cookies troppo piccolo ({size} bytes) — ignorato.")
     return []
 
+# ── Interrogazione YT ─────────────────────────────────────────────────────────
 
-# ── Download ──────────────────────────────────────────────────────────────────
 
 def get_channel_ids() -> list:
     print("[yt-dlp] Recupero lista video dal canale...")
@@ -190,146 +152,105 @@ def get_channel_ids() -> list:
         capture_output=True, text=True,
     )
     ids = [l.strip() for l in r.stdout.splitlines() if l.strip()]
-    print(f"[yt-dlp] {len(ids)} video trovati nel canale.")
     return ids
 
 
+# ── Download ──────────────────────────────────────────────────────────────────
+
+
 def load_failed_ids() -> set:
-    """Carica i video che hanno fallito in precedenza."""
     if FAILED_JSON.exists():
         return set(json.loads(FAILED_JSON.read_text(encoding="utf-8")))
     return set()
 
 
 def save_failed_ids(failed: set):
-    FAILED_JSON.write_text(
-        json.dumps(sorted(failed), ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    FAILED_JSON.write_text(json.dumps(
+        sorted(failed), ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def download_subtitles(analyzed_ids: set):
-    """
-    Scarica i VTT dei video non ancora analizzati.
-
-    Skip logic (in ordine di priorità):
-      1. analyzed_videos.json  → già analizzati con successo (persistente)
-      2. failed_videos.json    → già tentati e falliti (skip a meno di RETRY_FAILED)
-      3. VTT su disco          → già scaricati localmente
-
-    I video falliti vengono tracciati in failed_videos.json: se un video
-    dà errore di autenticazione bot, non viene ritentato ogni notte
-    (sprecherebbe quote e tempo). Con RETRY_FAILED=true vengono reinclusi.
-    """
+def download_subtitles(analyzed_ids: set, channel_ids: list):
     SUBS_DIR.mkdir(parents=True, exist_ok=True)
-
     failed_ids = load_failed_ids()
     if RETRY_FAILED and failed_ids:
-        print(
-            f"[RETRY] RETRY_FAILED attivo: {len(failed_ids)} video falliti verranno ritentati.")
-        failed_ids = set()  # azzera per questo run
+        failed_ids = set()
 
-    # Skip primario: già analizzati
-    already = set(analyzed_ids)
-    # Skip secondario: già falliti (a meno di retry)
-    already |= failed_ids
-    # Skip terziario: VTT su disco (locale)
+    already = set(analyzed_ids) | failed_ids
     on_disk = {id_and_title(p)[0] for p in SUBS_DIR.glob(f"*.{LANG}.vtt")}
     already |= on_disk
 
-    if analyzed_ids:
-        print(f"[SKIP] {len(analyzed_ids)} già analizzati")
-    if failed_ids:
-        print(
-            f"[SKIP] {len(failed_ids)} già falliti (usa RETRY_FAILED=true per ritentare)")
-    if on_disk - analyzed_ids - failed_ids:
-        print(
-            f"[SKIP] {len(on_disk - analyzed_ids - failed_ids)} VTT su disco")
-
-    all_ids = get_channel_ids()
-    to_download = [v for v in all_ids if v not in already]
-    print(f"[INFO] Da scaricare: {len(to_download)}\n")
+    to_download = [v for v in channel_ids if v not in already]
+    print(f"[INFO] Nuovi video da scaricare: {len(to_download)}\n")
 
     if not to_download:
-        print("[INFO] Nessun nuovo video — download saltato.")
         return
 
     batch = OUTPUT_DIR / "_batch.txt"
-    batch.write_text(
-        "\n".join(f"https://www.youtube.com/watch?v={v}" for v in to_download),
-        encoding="utf-8",
-    )
+    batch.write_text("\n".join(
+        f"https://www.youtube.com/watch?v={v}" for v in to_download), encoding="utf-8")
 
-    # Esegui yt-dlp catturando stderr per individuare i fallimenti
-    result = subprocess.run([
-        "yt-dlp",
-        "--batch-file", str(batch),
-        "--skip-download",
-        "--write-auto-sub",
-        "--sub-lang", LANG,
-        "--sub-format", "vtt",
-        "--no-check-formats",
-        # Catena di client: web (con cookie) → web_embedded → mweb
-        # Evita android/ios/vr che ignorano i cookie e vengono bloccati
+    subprocess.run([
+        "yt-dlp", "--batch-file", str(
+            batch), "--skip-download", "--write-auto-sub", "--write-info-json",
+        "--sub-lang", LANG, "--sub-format", "vtt", "--no-check-formats",
         "--extractor-args", "youtube:player_client=web,web_embedded,mweb",
-        "--js-runtimes", "deno",  # runtime raccomandato per EJS n-challenge solver
-        "--output", str(SUBS_DIR / "%(title)s [%(id)s].%(ext)s"),
-        "--ignore-errors",
-        "--sleep-interval", "2",
-        "--max-sleep-interval", "5",
-        "--sleep-subtitles", "1",
-        *cookies_args(),
-    ], text=True, capture_output=False)
-
+        "--js-runtimes", "deno", "--output", str(
+            SUBS_DIR / "%(title)s [%(id)s].%(ext)s"),
+        "--ignore-errors", "--sleep-interval", "2", "--max-sleep-interval", "5",
+        "--sleep-subtitles", "1", *cookies_args(),
+    ], text=True)
     batch.unlink(missing_ok=True)
 
-    # Individua i video che hanno fallito per autenticazione bot:
-    # sono quelli in to_download che non hanno prodotto un VTT
     after_download = {id_and_title(p)[0]
                       for p in SUBS_DIR.glob(f"*.{LANG}.vtt")}
-    newly_downloaded = after_download - on_disk
-    newly_failed = {v for v in to_download if v not in newly_downloaded}
+    newly_failed = {v for v in to_download if v not in (
+        after_download - on_disk)}
 
     if newly_failed:
-        print(
-            f"[WARN] {len(newly_failed)} video non hanno prodotto un VTT → salvati in failed_videos.json")
-        all_failed = load_failed_ids() | newly_failed
-        save_failed_ids(all_failed)
-    else:
-        # Se il retry ha avuto successo, aggiorna il file
-        if RETRY_FAILED:
-            save_failed_ids(set())
-
+        save_failed_ids(load_failed_ids() | newly_failed)
+    elif RETRY_FAILED:
+        save_failed_ids(set())
 
 # ── Analisi ───────────────────────────────────────────────────────────────────
 
-def process_subtitles(phrase: str, already_done_ids: set) -> list:
-    """
-    Analizza solo i VTT non ancora presenti nel JSON cumulativo.
-    Restituisce i nuovi risultati trovati.
-    """
-    vtt_files = sorted(SUBS_DIR.glob(f"*.{LANG}.vtt"))
-    new_files = [p for p in vtt_files if id_and_title(
-        p)[0] not in already_done_ids]
-    skip_count = len(vtt_files) - len(new_files)
 
-    print(
-        f"\n[INFO] VTT totali: {len(vtt_files)} | già analizzati: {skip_count} | nuovi: {len(new_files)}")
+def load_info_json(vtt_path: Path) -> dict:
+    info_path = vtt_path.with_suffix("").with_suffix(".info.json")
 
+    if not info_path.exists():
+        return {}
+
+    try:
+        return json.loads(info_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def process_subtitles(phrase: str, new_files: list, video_dates: dict) -> list:
     results = []
     for vtt_path in new_files:
         vid_id, title = id_and_title(vtt_path)
         url = f"https://www.youtube.com/watch?v={vid_id}"
 
+        # Prendiamo la data recuperata, o usiamo un fallback evidente
+        info = load_info_json(vtt_path)
+
+        raw_date = info.get("upload_date", "")
+        if raw_date and len(raw_date) == 8:
+            upload_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}"
+        else:
+            upload_date = "1970-01-01"
+
         sentences = parse_vtt_to_sentences(vtt_path)
         hits = search_phrase(sentences, phrase)
 
         if hits:
-            print(f"  ✓ [{title}] — {len(hits)} occorrenza/e")
+            print(f"  ✓ [{title}] ({upload_date}) — {len(hits)} occorrenza/e")
             for h in hits:
                 results.append({
                     "video_id": vid_id,
                     "title": title,
+                    "upload_date": upload_date,
                     "url": url,
                     "timestamp": seconds_to_hhmmss(h["start"]),
                     "start_sec": round(h["start"], 2),
@@ -341,98 +262,63 @@ def process_subtitles(phrase: str, already_done_ids: set) -> list:
 
     return results
 
-
 # ── Salvataggio cumulativo ────────────────────────────────────────────────────
 
+
 def load_cumulative() -> tuple:
-    """Carica il JSON cumulativo. Restituisce (lista_risultati, set_video_id_analizzati)."""
-    # Il JSON cumulativo tiene anche i video analizzati senza hit,
-    # così da non rianalizzarli ogni volta.
     meta_path = OUTPUT_DIR / "analyzed_videos.json"
-
-    results = []
-    if CUMULATIVE_JSON.exists():
-        results = json.loads(CUMULATIVE_JSON.read_text(encoding="utf-8"))
-
-    analyzed = set()
-    if meta_path.exists():
-        analyzed = set(json.loads(meta_path.read_text(encoding="utf-8")))
-
+    results = json.loads(CUMULATIVE_JSON.read_text(
+        encoding="utf-8")) if CUMULATIVE_JSON.exists() else []
+    analyzed = set(json.loads(meta_path.read_text(
+        encoding="utf-8"))) if meta_path.exists() else set()
     return results, analyzed, meta_path
 
 
 def save_cumulative(all_results: list, analyzed_ids: set, meta_path: Path):
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-    CUMULATIVE_JSON.write_text(
-        json.dumps(all_results, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-    meta_path.write_text(
-        json.dumps(sorted(analyzed_ids), ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-    # CSV di comodo
-    csv_path = OUTPUT_DIR / "results_cumulative.csv"
-    with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(
-            f, fieldnames=["video_id", "title", "timestamp", "direct_url", "text"])
-        w.writeheader()
-        w.writerows({k: r[k] for k in ["video_id", "title",
-                    "timestamp", "direct_url", "text"]} for r in all_results)
-
-    print(f"\n[JSON] → {CUMULATIVE_JSON}")
-    print(f"[CSV]  → {csv_path}")
-    print(f"[META] → {meta_path}")
-
+    CUMULATIVE_JSON.write_text(json.dumps(
+        all_results, ensure_ascii=False, indent=2), encoding="utf-8")
+    meta_path.write_text(json.dumps(sorted(analyzed_ids),
+                         ensure_ascii=False, indent=2), encoding="utf-8")
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--skip-download", action="store_true",
-                        help="Non scarica nuovi VTT, usa solo quelli presenti")
+    parser.add_argument("--skip-download", action="store_true")
     parser.add_argument("--phrase", default=SEARCH_PHRASE)
     args = parser.parse_args()
-    phrase = args.phrase
 
-    print("=" * 50)
-    print("  YouTube Subtitle Searcher  v3")
-    print("=" * 50)
-    print(f"Canale : {CHANNEL_URL}")
-    print(f"Frase  : \"{phrase}\"")
-    print(f"Output : {OUTPUT_DIR}\n")
-
-    # Carica PRIMA i dati cumulativi, così download_subtitles sa cosa saltare
     existing_results, analyzed_ids, meta_path = load_cumulative()
-    print(
-        f"[INFO] Risultati già nel JSON: {len(existing_results)} | Video già analizzati: {len(analyzed_ids)}")
 
     if not args.skip_download:
-        download_subtitles(analyzed_ids)
+        channel_ids = get_channel_ids()
+        download_subtitles(analyzed_ids, channel_ids)
     else:
         print("[INFO] Download saltato.")
 
-    # Analizza solo i nuovi VTT
-    new_results = process_subtitles(phrase, analyzed_ids)
+    # Trova i VTT da analizzare
+    vtt_files = sorted(SUBS_DIR.glob(f"*.{LANG}.vtt"))
 
-    # Aggiorna il set dei video analizzati con tutti quelli ora su disco
-    for vtt_path in SUBS_DIR.glob(f"*.{LANG}.vtt"):
-        analyzed_ids.add(id_and_title(vtt_path)[0])
+    new_files = [
+        p for p in vtt_files
+        if id_and_title(p)[0] not in analyzed_ids
+    ]
 
-    # Merge
+    # Analizza direttamente i file
+    new_results = process_subtitles(args.phrase, new_files)
+
+    # Marca i video come analizzati
+    for p in new_files:
+        analyzed_ids.add(id_and_title(p)[0])
+
+    # Merge risultati
     all_results = existing_results + new_results
 
     save_cumulative(all_results, analyzed_ids, meta_path)
 
-    print(f"\n✅ Totale occorrenze nel JSON cumulativo: {len(all_results)}")
-    if new_results:
-        uv = len({r["video_id"] for r in new_results})
-        print(f"   Nuove questa run: {len(new_results)} in {uv} video.")
-    else:
-        print("   Nessuna nuova occorrenza trovata.")
+    print("\n✅ Operazione conclusa.")
 
 
 if __name__ == "__main__":

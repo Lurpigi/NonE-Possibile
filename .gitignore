@@ -2,7 +2,7 @@
 output/subtitles/
 #output/_batch.txt
 *.txt
-
+clip/
 # File temporanei
 *.pyc
 __pycache__/

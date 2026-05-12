@@ -14,6 +14,17 @@ services:
             - ./yt_cookies.txt:/yt_cookies.txt
         restart: "no"
 
+    downloader:
+        build:
+            context: .
+            dockerfile: Dockerfile.download
+        image: sabaku-subtitle-downloader:latest
+        container_name: sabaku_downloader
+        environment:
+            YT_COOKIES_FILE: "/yt_cookies.txt"
+        volumes:
+            - ./clip:/app/clip
+        restart: "no"
 # ── USO ──────────────────────────────────────────────────────────────────────
 # Prima run (scarica tutto + analizza):
 #   docker compose up --build
