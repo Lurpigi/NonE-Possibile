@@ -165,30 +165,49 @@
                 margin-left: 0.3rem;
             }
 
+            .info-wrapper {
+                position: relative;
+                display: inline-flex;
+                align-items: center;
+            }
+
             .info-tooltip {
                 position: absolute;
                 bottom: calc(100% + 12px);
                 left: 50%;
-                transform: translateX(-50%) translateY(4px);
+                transform: translateX(-50%) translateY(6px);
                 background: var(--bg-card);
                 border: 1px solid #e8eaed;
                 border-radius: var(--radius-md);
                 padding: 1rem;
-                width: 280px;
+                width: min(280px, 90vw);
                 box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
-                z-index: 1000;
+                z-index: 9999;
                 white-space: normal;
                 text-align: left;
-                /* Hover logic */
+
                 opacity: 0;
+                visibility: hidden;
                 pointer-events: none;
+
                 transition:
                     opacity 0.2s ease,
-                    transform 0.2s ease;
+                    transform 0.2s ease,
+                    visibility 0.2s ease;
             }
 
+            /* Desktop hover */
             .info-wrapper:hover .info-tooltip {
                 opacity: 1;
+                visibility: visible;
+                pointer-events: auto;
+                transform: translateX(-50%) translateY(0);
+            }
+
+            /* Mobile click/tap */
+            .info-wrapper.active .info-tooltip {
+                opacity: 1;
+                visibility: visible;
                 pointer-events: auto;
                 transform: translateX(-50%) translateY(0);
             }
@@ -675,6 +694,73 @@
                     display: none;
                 }
             }
+
+            input,
+            button,
+            textarea,
+            select {
+                font-size: 16px;
+            }
+
+            @media (max-width: 768px) {
+                body {
+                    font-size: 15px;
+                }
+
+                .hero {
+                    padding-top: 3rem;
+                }
+
+                .hero-sub {
+                    font-size: 1rem;
+                    line-height: 1.7;
+                }
+
+                .stats-inner {
+                    flex-direction: column;
+                }
+
+                .stat {
+                    min-width: unset;
+                    width: 100%;
+                }
+
+                .controls-inner {
+                    padding: 0.8rem;
+                    gap: 0.8rem;
+                }
+
+                .search-wrap {
+                    min-width: unset;
+                    width: 100%;
+                }
+
+                .group-cards {
+                    grid-template-columns: 1fr;
+                }
+
+                .card {
+                    padding: 1.2rem;
+                }
+
+                .card-quote {
+                    font-size: 0.95rem;
+                }
+
+                .group-title {
+                    font-size: 1rem;
+                    line-height: 1.4;
+                }
+
+                .pagination {
+                    gap: 0.35rem;
+                }
+
+                .page-btn {
+                    width: 36px;
+                    height: 36px;
+                }
+            }
         </style>
 
         <script type="application/ld+json">
@@ -701,26 +787,29 @@
         <div class="hero">
             <p class="hero-kicker">📼 Il Vero problema di sabaku:</p>
             <h1 class="hero-title">«Non è<br /><em>possibile!»</em></h1>
-            <p class="hero-sub">
-                Ogni volta che Sabaku l'ha detto: video, minuto esatto, contesto. Aggiornato
-                automaticamente ogni notte.
+            <div class="hero-sub">
+                <span>
+                    Ogni volta che Sabaku l'ha detto: video, minuto esatto, contesto. Aggiornato
+                    automaticamente ogni notte.
+                </span>
 
                 <span class="info-wrapper">
                     <button class="info-btn" aria-label="Informazioni">ⓘ</button>
-                    <div class="info-tooltip">
+
+                    <span class="info-tooltip">
                         <p>
                             L'idea iniziale era di eseguire gli aggiornamenti automaticamente
-                            tramite GitHub Actions, ma gli IP dei worker GitHub sono bloccati da
-                            YouTube.
+                            tramite <b>GitHub Actions</b>, ma gli IP dei worker GitHub sono bloccati
+                            da YouTube.
                         </p>
 
                         <p>
                             Finché non avrò un server personale a casa, gli aggiornamenti avverranno
                             quando li farò girare manualmente.
                         </p>
-                    </div>
+                    </span>
                 </span>
-            </p>
+            </div>
         </div>
 
         <div class="stats-bar">
@@ -1054,6 +1143,21 @@
                 return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
             }
 
+            /* ── Tooltip mobile ───────────────────────────────────────────── */
+            const infoWrapper = document.querySelector(".info-wrapper");
+
+            if (infoWrapper) {
+                const infoBtn = infoWrapper.querySelector(".info-btn");
+
+                infoBtn.addEventListener("click", (e) => {
+                    e.stopPropagation();
+                    infoWrapper.classList.toggle("active");
+                });
+
+                document.addEventListener("click", () => {
+                    infoWrapper.classList.remove("active");
+                });
+            }
             /* ── Avvio ──────────────────────────────────────────────────────────── */
             loadData();
         </script>
