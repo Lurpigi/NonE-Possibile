@@ -139,6 +139,58 @@
                 color: var(--primary);
                 padding: 0.4rem 0.8rem;
                 border-radius: var(--radius-sm);
+                position: relative;
+                display: flex;
+                align-items: center;
+                gap: 0.5rem;
+                justify-content: flex-end;
+            }
+
+            .info-btn {
+                background: none;
+                border: none;
+                color: var(--primary);
+                cursor: pointer;
+                font-size: 0.9rem;
+                padding: 0;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                width: 18px;
+                height: 18px;
+                border-radius: 50%;
+                transition: all 0.2s;
+                flex-shrink: 0;
+                position: relative;
+                margin-left: 0.3rem;
+            }
+
+            .info-tooltip {
+                position: absolute;
+                bottom: calc(100% + 12px);
+                left: 50%;
+                transform: translateX(-50%) translateY(4px);
+                background: var(--bg-card);
+                border: 1px solid #e8eaed;
+                border-radius: var(--radius-md);
+                padding: 1rem;
+                width: 280px;
+                box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+                z-index: 1000;
+                white-space: normal;
+                text-align: left;
+                /* Hover logic */
+                opacity: 0;
+                pointer-events: none;
+                transition:
+                    opacity 0.2s ease,
+                    transform 0.2s ease;
+            }
+
+            .info-wrapper:hover .info-tooltip {
+                opacity: 1;
+                pointer-events: auto;
+                transform: translateX(-50%) translateY(0);
             }
 
             /* ── Hero ────────────────────────────────────────────────────────── */
@@ -652,6 +704,22 @@
             <p class="hero-sub">
                 Ogni volta che Sabaku l'ha detto: video, minuto esatto, contesto. Aggiornato
                 automaticamente ogni notte.
+
+                <span class="info-wrapper">
+                    <button class="info-btn" aria-label="Informazioni">ⓘ</button>
+                    <div class="info-tooltip">
+                        <p>
+                            L'idea iniziale era di eseguire gli aggiornamenti automaticamente
+                            tramite GitHub Actions, ma gli IP dei worker GitHub sono bloccati da
+                            YouTube.
+                        </p>
+
+                        <p>
+                            Finché non avrò un server personale a casa, gli aggiornamenti avverranno
+                            quando li farò girare manualmente.
+                        </p>
+                    </div>
+                </span>
             </p>
         </div>
 

@@ -294,6 +294,7 @@ def main():
 
     if not args.skip_download:
         channel_ids = get_channel_ids()
+        print(f"[INFO] Totale video nel canale: {len(channel_ids)}")
         download_subtitles(analyzed_ids, channel_ids)
     else:
         print("[INFO] Download saltato.")

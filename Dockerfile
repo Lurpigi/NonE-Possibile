@@ -18,5 +18,7 @@ RUN yt-dlp --version
 WORKDIR /app
 COPY search_subtitles.py .
 
+ENV PYTHONUNBUFFERED=1
+
 VOLUME ["/output"]
 ENTRYPOINT ["python", "search_subtitles.py"]
