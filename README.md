@@ -3,8 +3,6 @@
 Archivio automatico di ogni volta che Sabaku ha detto _«non è possibile»_ nei suoi video YouTube.
 Il sito si aggiorna ogni notte tramite GitHub Actions.
 
-**Stato attuale:** 🎯 **1.844 risultati** trovati da **3.092 video** analizzati
-
 ## Struttura del progetto
 
 ```
