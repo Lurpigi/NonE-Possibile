@@ -946,12 +946,26 @@
                 });
             }
 
+            function formatLastModifiedDate(headerValue) {
+                if (!headerValue) return "—";
+                const date = new Date(headerValue);
+                if (Number.isNaN(date.getTime())) return "—";
+                return date.toLocaleDateString("it-IT", {
+                    day: "2-digit",
+                    month: "short",
+                    year: "numeric",
+                });
+            }
+
             /* ── Fetch dati ─────────────────────────────────────────────────────── */
             async function loadData() {
                 try {
                     const res = await fetch(DATA_URL);
                     if (!res.ok) throw new Error(res.status);
                     allData = await res.json();
+                    document.getElementById("stat-updated").textContent = formatLastModifiedDate(
+                        res.headers.get("last-modified"),
+                    );
                     init();
                 } catch (e) {
                     document.getElementById("cards-grid").innerHTML =
@@ -988,13 +1002,6 @@
                 document.getElementById("stat-total").textContent =
                     allData.length.toLocaleString("it");
                 document.getElementById("stat-videos").textContent = videos.toLocaleString("it");
-
-                const today = new Date().toLocaleDateString("it-IT", {
-                    day: "2-digit",
-                    month: "short",
-                    year: "numeric",
-                });
-                document.getElementById("stat-updated").textContent = today;
             }
 
             /* ── Filtra + ordina ────────────────────────────────────────────────── */
