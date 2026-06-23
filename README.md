@@ -82,7 +82,22 @@ docker compose run --rm yt-search --skip-download
 
 # Cerca una frase diversa:
 docker compose run --rm -e SEARCH_PHRASE="assolutamente no" yt-search --skip-download
+
+# Rianalizza tutti i sottotitoli già scaricati (es. dopo una modifica alla logica
+# di ricerca/matching), senza riscaricare nulla. Ricostruisce results_cumulative.json:
+docker compose run --rm yt-search --reanalyze
+
+# Recupera solo la upload_date (nessun sottotitolo) per i risultati rimasti
+# con la data di fallback 1970-01-01 (es. dopo --reanalyze su video di cui
+# non esiste più il .info.json locale):
+docker compose run --rm yt-search --fix-dates
 ```
+
+Ogni run (incluse `--reanalyze` e `--fix-dates`) sincronizza automaticamente
+`docs/results.json` (sito GitHub Pages) con `output/results_cumulative.json`,
+tramite la variabile `DOCS_JSON` impostata in `docker-compose.yml` e il volume
+`./docs:/docs`. Non serve più aspettare la GitHub Action notturna per vedere
+gli aggiornamenti sul sito in locale.
 
 ### Scaricare clip casuali
 

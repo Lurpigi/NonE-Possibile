@@ -9,9 +9,11 @@ services:
             LANG_CODE: "it"
             OUTPUT_DIR: "/output"
             YT_COOKIES_FILE: "/yt_cookies.txt"
+            DOCS_JSON: "/docs/results.json"
         volumes:
             - ./output:/output
             - ./yt_cookies.txt:/yt_cookies.txt
+            - ./docs:/docs
         restart: "no"
 
     downloader:
@@ -37,3 +39,9 @@ services:
 #
 # Frase diversa senza re-download:
 #   docker compose run --rm -e SEARCH_PHRASE="assolutamente no" yt-search --skip-download
+#
+# Rianalisi completa dei .vtt locali con la logica di matching corrente (no download):
+#   docker compose run --rm yt-search --reanalyze
+#
+# Recupera solo la upload_date per i risultati con data di fallback 1970-01-01:
+#   docker compose run --rm yt-search --fix-dates
