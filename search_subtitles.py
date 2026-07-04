@@ -30,6 +30,10 @@ DATES_JSON = OUTPUT_DIR / "video_dates.json"
 DOCS_JSON = Path(os.getenv("DOCS_JSON")) if os.getenv("DOCS_JSON") else None
 COOKIES_FILE = os.getenv("YT_COOKIES_FILE", "")
 RETRY_FAILED = os.getenv("RETRY_FAILED", "false").lower() == "true"
+# Occorrenze nello stesso video più vicine di così (secondi) sono considerate
+# la stessa clip e vengono unite (default = durata clip in download.py = 10s?
+# no: solo ripetizioni rapide, 3s).
+MERGE_GAP_SEC = float(os.getenv("MERGE_GAP_SEC", "3"))
 
 # ── Utilità tempo ─────────────────────────────────────────────────────────────
 
@@ -204,10 +208,18 @@ def search_phrase_in_stream(words: list, phrase: str) -> list:
 
     while i <= limit:
         if seq[i:i + n] == phrase_words:
+            start_sec = words[i][1]
+            # Le ripetizioni molto ravvicinate (es. "non è possibile. no, non
+            # è possibile" detto di fila) sono la STESSA clip: una clip dura
+            # MERGE_GAP_SEC e finestre così vicine si sovrappongono. Le uniamo
+            # tenendo solo la prima.
+            if hits and start_sec - hits[-1]["start"] < MERGE_GAP_SEC:
+                i += n
+                continue
             ctx_start = max(0, i - 5)
             ctx_end = min(len(words), i + n + 10)
             hits.append({
-                "start": words[i][1],
+                "start": start_sec,
                 "text": " ".join(w for w, _ in words[ctx_start:ctx_end]),
             })
             i += n
