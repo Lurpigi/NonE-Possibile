@@ -98,6 +98,7 @@ jobs:
                     output/results_cumulative.json \
                     output/analyzed_videos.json \
                     output/failed_videos.json \
+                    output/video_dates.json \
                     docs/results.json
 
                   if git diff --cached --quiet; then

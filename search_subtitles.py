@@ -23,6 +23,10 @@ SUBS_DIR = OUTPUT_DIR / "subtitles"
 LANG = os.getenv("LANG_CODE", "it")
 CUMULATIVE_JSON = OUTPUT_DIR / "results_cumulative.json"
 FAILED_JSON = OUTPUT_DIR / "failed_videos.json"
+# Cache persistente video_id -> upload_date: evita di perdere le date quando si
+# rianalizza (il .info.json viene rimosso dopo il download) o quando un video
+# rientra nei risultati dopo una modifica alla logica di matching.
+DATES_JSON = OUTPUT_DIR / "video_dates.json"
 DOCS_JSON = Path(os.getenv("DOCS_JSON")) if os.getenv("DOCS_JSON") else None
 COOKIES_FILE = os.getenv("YT_COOKIES_FILE", "")
 RETRY_FAILED = os.getenv("RETRY_FAILED", "false").lower() == "true"
@@ -118,94 +122,97 @@ def parse_vtt_to_sentences(vtt_path: Path) -> list:
     return sentences
 
 
-def parse_vtt_raw_cues(vtt_path: Path) -> list:
-    """Extract raw cues with start time and cleaned text. No dedup."""
+_CUE_RE = re.compile(
+    r"(\d{2}:\d{2}:\d{2}[\.,]\d{3})\s*-->\s*\S+[^\n]*\n(.*?)(?=\n\n|\Z)",
+    re.DOTALL,
+)
+_INLINE_TS_RE = re.compile(r"<(\d{2}:\d{2}:\d{2}[\.,]\d{3})>")
+
+
+def parse_vtt_word_stream(vtt_path: Path) -> list:
+    """
+    Ricostruisce il flusso di parole realmente pronunciate, ognuna UNA sola
+    volta, con il proprio timestamp -> list[(word_lower, start_sec)].
+
+    I sottotitoli automatici di YouTube usano le "rolling captions": la stessa
+    frase compare fino a 3 volte:
+      1. una riga "in costruzione" con timing inline (<00:00:02.570><c> parola</c>)
+      2. una riga di testo semplice, "completata", in un cue lampo da ~10ms
+      3. di nuovo come riga superiore del cue successivo (scroll verso l'alto)
+
+    Contare il testo di ogni cue (come faceva parse_vtt_raw_cues) gonfia quindi
+    il conteggio di 2-3x. Solo le righe con i timestamp INLINE contengono il
+    testo NUOVO: usando esclusivamente quelle otteniamo ogni parola una volta
+    sola, con un timing per-parola preciso.
+    """
     raw = vtt_path.read_text(encoding="utf-8", errors="replace")
 
-    cue_re = re.compile(
-        r"(\d{2}:\d{2}:\d{2}[\.,]\d{3})\s*-->\s*\S+[^\n]*\n(.*?)(?=\n\n|\Z)",
-        re.DOTALL,
-    )
+    words = []
+    for m in _CUE_RE.finditer(raw):
+        cue_start = vtt_time_to_seconds(m.group(1))
+        for line in m.group(2).split("\n"):
+            first = _INLINE_TS_RE.search(line)
+            if not first:
+                # riga di solo testo (ripetizione) -> ignorata
+                continue
 
-    cues = []
-    for m in cue_re.finditer(raw):
-        text = clean_vtt_text(m.group(2))
-        if text:
-            cues.append({
-                "start": vtt_time_to_seconds(m.group(1)),
-                "text": text,
-            })
-    return cues
+            # Testo prima del primo timestamp inline: parte al cue_start
+            for w in clean_vtt_text(line[:first.start()]).split():
+                words.append((w.lower(), cue_start))
+
+            # Ogni segmento "<ts> parola" parte al proprio timestamp
+            for tm in _INLINE_TS_RE.finditer(line):
+                t = vtt_time_to_seconds(tm.group(1))
+                nxt = _INLINE_TS_RE.search(line, tm.end())
+                seg = line[tm.end(): nxt.start() if nxt else len(line)]
+                for w in clean_vtt_text(seg).split():
+                    words.append((w.lower(), t))
+
+    return words
 
 
-def search_phrase_in_cues(cues: list, phrase: str, context_words: int = 40) -> list:
+# Punteggiatura da rimuovere ai BORDI di ogni parola prima del confronto:
+# alcune tracce (ASR con punteggiatura) producono "possibile." con il punto
+# attaccato, che romperebbe il match esatto. L'apostrofo interno (po', c'è)
+# viene preservato perché si toglie solo dai bordi.
+_EDGE_PUNCT = ".,;:!?\"'«»()[]{}…—–-"
+
+
+def _norm_word(w: str) -> str:
+    return w.strip(_EDGE_PUNCT).lower()
+
+
+def search_phrase_in_stream(words: list, phrase: str) -> list:
     """
-    Search for phrase across cue boundaries using a sliding text window.
-
-    Strategy:
-    1. Build a flat list of (word, start_time) pairs from all cues.
-       Each cue's words are tagged with the cue's start time.
-    2. Join a sliding window of words into a string and search for the phrase.
-    3. On match, record the start time of the first word in the window
-       that contains the phrase.
+    Cerca la frase nel flusso di parole. Ogni occorrenza pronunciata viene
+    contata UNA volta (match esatto di sequenza di parole, non sovrapposto);
+    non serve più la deduplica euristica "entro 2 secondi" perché il flusso
+    non contiene più ripetizioni. Il confronto normalizza la punteggiatura ai
+    bordi delle parole così da tollerare tracce con punteggiatura (es.
+    "non è possibile.").
     """
-    phrase_lower = phrase.lower()
-    phrase_words = phrase_lower.split()
+    phrase_words = [_norm_word(w) for w in phrase.split()]
     n = len(phrase_words)
 
-    if not cues or n == 0:
+    if not words or n == 0:
         return []
 
-    # Build flat word list: [(word_lower, start_sec), ...]
-    word_list = []
-    for cue in cues:
-        words = cue["text"].split()
-        for w in words:
-            word_list.append((w.lower(), cue["start"]))
-
+    seq = [_norm_word(w) for w, _ in words]
     hits = []
-    seen_starts = set()  # deduplicate by start second
+    i = 0
+    limit = len(seq) - n
 
-    # Slide a window of `n + context_words` words
-    window = n + context_words
-
-    for i in range(len(word_list) - n + 1):
-        # Take a window of words around position i
-        chunk_words = [w for w, _ in word_list[i: i + window]]
-        chunk_text = " ".join(chunk_words)
-
-        pos = chunk_text.lower().find(phrase_lower)
-        if pos == -1:
-            continue
-
-        # Find which word index in the window the phrase starts at
-        chars = 0
-        phrase_word_idx = 0
-        for j, word in enumerate(chunk_words):
-            if chars >= pos:
-                phrase_word_idx = j
-                break
-            chars += len(word) + 1  # +1 for space
-
-        # Absolute index in word_list
-        abs_idx = i + phrase_word_idx
-        start_sec = word_list[abs_idx][1]
-
-        # Deduplicate: skip if we already found a hit within 2 seconds
-        rounded = round(start_sec)
-        if any(abs(rounded - s) < 2 for s in seen_starts):
-            continue
-        seen_starts.add(rounded)
-
-        # Build context text: a few words before and after the phrase
-        ctx_start = max(0, abs_idx - 5)
-        ctx_end = min(len(word_list), abs_idx + n + 10)
-        context = " ".join(w for w, _ in word_list[ctx_start:ctx_end])
-
-        hits.append({
-            "start": start_sec,
-            "text": context,
-        })
+    while i <= limit:
+        if seq[i:i + n] == phrase_words:
+            ctx_start = max(0, i - 5)
+            ctx_end = min(len(words), i + n + 10)
+            hits.append({
+                "start": words[i][1],
+                "text": " ".join(w for w, _ in words[ctx_start:ctx_end]),
+            })
+            i += n
+        else:
+            i += 1
 
     return hits
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -379,8 +386,8 @@ def process_subtitles(phrase: str, new_files: list, video_dates: dict) -> list:
         else:
             upload_date = video_dates.get(vid_id, "1970-01-01")
 
-        cues = parse_vtt_raw_cues(vtt_path)
-        hits = search_phrase_in_cues(cues, phrase)
+        words = parse_vtt_word_stream(vtt_path)
+        hits = search_phrase_in_stream(words, phrase)
 
         if hits:
             print(f"  ✓ [{title}] ({upload_date}) — {len(hits)} occorrenza/e")
@@ -410,6 +417,21 @@ def load_cumulative() -> tuple:
     analyzed = set(json.loads(meta_path.read_text(
         encoding="utf-8"))) if meta_path.exists() else set()
     return results, analyzed, meta_path
+
+
+def load_date_cache() -> dict:
+    if DATES_JSON.exists():
+        try:
+            return json.loads(DATES_JSON.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+
+def save_date_cache(dates: dict):
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    DATES_JSON.write_text(json.dumps(
+        dates, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
 
 
 def save_cumulative(all_results: list, analyzed_ids: set, meta_path: Path):
@@ -453,6 +475,10 @@ def main():
         for r in existing_results:
             if r["video_id"] in fixed:
                 r["upload_date"] = fixed[r["video_id"]]
+        # Aggiorna la cache persistente delle date
+        date_cache = load_date_cache()
+        date_cache.update(fixed)
+        save_date_cache(date_cache)
         save_cumulative(existing_results, analyzed_ids, meta_path)
         print("\n✅ Operazione conclusa.")
         return
@@ -478,8 +504,12 @@ def main():
         ]
 
     # Mappa video_id -> data già nota, usata come fallback quando il
-    # .info.json non è più sul disco (es. durante --reanalyze)
-    video_dates = {r["video_id"]: r["upload_date"] for r in existing_results}
+    # .info.json non è più sul disco (es. durante --reanalyze). Unione della
+    # cache persistente e delle date già presenti nei risultati correnti.
+    video_dates = load_date_cache()
+    for r in existing_results:
+        if r["upload_date"] != "1970-01-01":
+            video_dates.setdefault(r["video_id"], r["upload_date"])
 
     # Analizza direttamente i file
     new_results = process_subtitles(args.phrase, new_files, video_dates)
@@ -490,6 +520,12 @@ def main():
 
     # Merge risultati (in rianalisi, i nuovi risultati sostituiscono i vecchi)
     all_results = new_results if args.reanalyze else existing_results + new_results
+
+    # Persisti ogni data reale imparata, così non va persa in run future
+    for r in all_results:
+        if r["upload_date"] != "1970-01-01":
+            video_dates[r["video_id"]] = r["upload_date"]
+    save_date_cache(video_dates)
 
     save_cumulative(all_results, analyzed_ids, meta_path)
 
